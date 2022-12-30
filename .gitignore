@@ -21,3 +21,6 @@ builds/vc/ipch/
 *.opensdf
 *.sdf
 *.ipch
+/hdiffz
+/hpatchz
+build
