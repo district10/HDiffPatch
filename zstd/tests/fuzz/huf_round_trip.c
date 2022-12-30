@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -24,11 +24,12 @@
 #include "common/huf.h"
 #include "fuzz_helpers.h"
 #include "fuzz_data_producer.h"
+#include "common/bits.h"
 
 static size_t adjustTableLog(size_t tableLog, size_t maxSymbol)
 {
     size_t const alphabetSize = maxSymbol + 1;
-    size_t minTableLog = BIT_highbit32(alphabetSize) + 1;
+    size_t minTableLog = ZSTD_highbit32(alphabetSize) + 1;
     if ((alphabetSize & (alphabetSize - 1)) != 0) {
         ++minTableLog;
     }
@@ -82,7 +83,9 @@ int LLVMFuzzerTestOneInput(const uint8_t *src, size_t size)
     HUF_DTable* dt = (HUF_DTable*)FUZZ_malloc(HUF_DTABLE_SIZE(tableLog) * sizeof(HUF_DTable));
     dt[0] = tableLog * 0x01000001;
 
-    tableLog = HUF_optimalTableLog(tableLog, size, maxSymbol);
+    HUF_depth_mode depthMode = rand() & 1 ? HUF_depth_fast : HUF_depth_optimal;
+
+    tableLog = HUF_optimalTableLog(tableLog, size, maxSymbol, wksp, wkspSize, ct, count, depthMode);
     FUZZ_ASSERT(tableLog <= 12);
     tableLog = HUF_buildCTable_wksp(ct, count, maxSymbol, tableLog, wksp, wkspSize);
     FUZZ_ZASSERT(tableLog);

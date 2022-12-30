@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -165,6 +165,12 @@
 #define UNLIKELY(x) (x)
 #endif
 
+#if __has_builtin(__builtin_unreachable) || (defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5)))
+#  define ZSTD_UNREACHABLE { assert(0), __builtin_unreachable(); }
+#else
+#  define ZSTD_UNREACHABLE { assert(0); }
+#endif
+
 /* disable warnings */
 #ifdef _MSC_VER    /* Visual Studio */
 #  include <intrin.h>                    /* For Visual 2005 */
@@ -181,6 +187,8 @@
 #    ifdef __AVX2__  //MSVC does not have a BMI2 specific flag, but every CPU that supports AVX2 also supports BMI2
 #       define STATIC_BMI2 1
 #    endif
+#  elif defined(__BMI2__) && defined(__x86_64__) && defined(__GNUC__)
+#    define STATIC_BMI2 1
 #  endif
 #endif
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -80,7 +80,7 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
     setRand(cctx, ZSTD_c_checksumFlag, 0, 1, producer);
     setRand(cctx, ZSTD_c_dictIDFlag, 0, 1, producer);
     /* Select long distance matching parameters */
-    setRand(cctx, ZSTD_c_enableLongDistanceMatching, 0, 1, producer);
+    setRand(cctx, ZSTD_c_enableLongDistanceMatching, ZSTD_ps_auto, ZSTD_ps_disable, producer);
     setRand(cctx, ZSTD_c_ldmHashLog, ZSTD_HASHLOG_MIN, 16, producer);
     setRand(cctx, ZSTD_c_ldmMinMatch, ZSTD_LDM_MINMATCH_MIN,
             ZSTD_LDM_MINMATCH_MAX, producer);
@@ -89,8 +89,13 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
     setRand(cctx, ZSTD_c_ldmHashRateLog, ZSTD_LDM_HASHRATELOG_MIN,
             ZSTD_LDM_HASHRATELOG_MAX, producer);
     /* Set misc parameters */
+#ifndef ZSTD_MULTITHREAD
+    setRand(cctx, ZSTD_c_nbWorkers, 0, 0, producer);
+    setRand(cctx, ZSTD_c_rsyncable, 0, 0, producer);
+#else
     setRand(cctx, ZSTD_c_nbWorkers, 0, 2, producer);
     setRand(cctx, ZSTD_c_rsyncable, 0, 1, producer);
+#endif
     setRand(cctx, ZSTD_c_useRowMatchFinder, 0, 2, producer);
     setRand(cctx, ZSTD_c_enableDedicatedDictSearch, 0, 1, producer);
     setRand(cctx, ZSTD_c_forceMaxWindow, 0, 1, producer);
@@ -98,6 +103,7 @@ void FUZZ_setRandomParameters(ZSTD_CCtx *cctx, size_t srcSize, FUZZ_dataProducer
     setRand(cctx, ZSTD_c_forceAttachDict, 0, 2, producer);
     setRand(cctx, ZSTD_c_useBlockSplitter, 0, 2, producer);
     setRand(cctx, ZSTD_c_deterministicRefPrefix, 0, 1, producer);
+    setRand(cctx, ZSTD_c_prefetchCDictTables, 0, 2, producer);
     if (FUZZ_dataProducer_uint32Range(producer, 0, 1) == 0) {
       setRand(cctx, ZSTD_c_srcSizeHint, ZSTD_SRCSIZEHINT_MIN, 2 * srcSize, producer);
     }

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -136,7 +136,7 @@ static void RAND_genDist(U32* seed, BYTE* dist, double weight)
     BYTE step = (BYTE) ((RAND(seed) % 256) | 1); /* force it to be odd so it's relatively prime to 256 */
 
     while (i < DISTSIZE) {
-        size_t states = ((size_t)(weight * statesLeft)) + 1;
+        size_t states = ((size_t)(weight * (double)statesLeft)) + 1;
         size_t j;
         for (j = 0; j < states && i < DISTSIZE; j++, i++) {
             dist[i] = symb;
@@ -662,16 +662,16 @@ generateSequences(U32* seed, frame_t* frame, seqStore_t* seqStore,
          * ensure nice numbers */
         U32 matchLen =
                 MIN_SEQ_LEN +
-                ROUND(RAND_exp(seed, excessMatch / (double)(numSequences - i)));
+                ROUND(RAND_exp(seed, (double)excessMatch / (double)(numSequences - i)));
         U32 literalLen =
                 (RAND(seed) & 7)
                         ? ROUND(RAND_exp(seed,
-                                         literalsSize /
+                                         (double)literalsSize /
                                                  (double)(numSequences - i)))
                         : 0;
         /* actual offset, code to send, and point to copy up to when shifting
          * codes in the repeat offsets history */
-        U32 offset, offsetCode, repIndex;
+        U32 offset, offBase, repIndex;
 
         /* bounds checks */
         matchLen = (U32) MIN(matchLen, excessMatch + MIN_SEQ_LEN);
@@ -707,12 +707,12 @@ generateSequences(U32* seed, frame_t* frame, seqStore_t* seqStore,
                         }
                     }
                 }
-                offsetCode = STORE_OFFSET(offset);
+                offBase = OFFSET_TO_OFFBASE(offset);
                 repIndex = 2;
             } else {
                 /* do a repeat offset */
                 U32 const randomRepIndex = RAND(seed) % 3;
-                offsetCode = STORE_REPCODE(randomRepIndex + 1);  /* expects values between 1 & 3 */
+                offBase = REPCODE_TO_OFFBASE(randomRepIndex + 1);  /* expects values between 1 & 3 */
                 if (literalLen > 0) {
                     offset = frame->stats.rep[randomRepIndex];
                     repIndex = randomRepIndex;
@@ -751,12 +751,12 @@ generateSequences(U32* seed, frame_t* frame, seqStore_t* seqStore,
         DISPLAYLEVEL(7, " srcPos: %8u seqNb: %3u",
                      (unsigned)((BYTE*)srcPtr - (BYTE*)frame->srcStart), (unsigned)i);
         DISPLAYLEVEL(6, "\n");
-        if (STORED_IS_REPCODE(offsetCode)) {  /* expects sumtype numeric representation of ZSTD_storeSeq() */
+        if (OFFBASE_IS_REPCODE(offBase)) {  /* expects sumtype numeric representation of ZSTD_storeSeq() */
             DISPLAYLEVEL(7, "        repeat offset: %d\n", (int)repIndex);
         }
         /* use libzstd sequence handling */
         ZSTD_storeSeq(seqStore, literalLen, literals, literals + literalLen,
-                      offsetCode, matchLen);
+                      offBase, matchLen);
 
         literalsSize -= literalLen;
         excessMatch -= (matchLen - MIN_SEQ_LEN);
@@ -765,8 +765,8 @@ generateSequences(U32* seed, frame_t* frame, seqStore_t* seqStore,
 
     memcpy(srcPtr, literals, literalsSize);
     srcPtr += literalsSize;
-    DISPLAYLEVEL(6, "      excess literals: %5u", (unsigned)literalsSize);
-    DISPLAYLEVEL(7, " srcPos: %8u", (unsigned)((BYTE*)srcPtr - (BYTE*)frame->srcStart));
+    DISPLAYLEVEL(6, "      excess literals: %5u ", (unsigned)literalsSize);
+    DISPLAYLEVEL(7, "srcPos: %8u ", (unsigned)((BYTE*)srcPtr - (BYTE*)frame->srcStart));
     DISPLAYLEVEL(6, "\n");
 
     return numSequences;

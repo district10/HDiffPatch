@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -27,8 +27,8 @@
 /*-************************************
 *  Dependencies
 **************************************/
-#include "platform.h" /* IS_CONSOLE, PLATFORM_POSIX_VERSION */
-#include "util.h"     /* UTIL_HAS_CREATEFILELIST, UTIL_createFileList */
+#include "platform.h" /* PLATFORM_POSIX_VERSION */
+#include "util.h"     /* UTIL_HAS_CREATEFILELIST, UTIL_createFileList, UTIL_isConsole */
 #include <stdlib.h>   /* getenv */
 #include <string.h>   /* strcmp, strlen */
 #include <stdio.h>    /* fprintf(), stdin, stdout, stderr */
@@ -46,17 +46,18 @@
 #  include "zstdcli_trace.h"
 #endif
 #include "../lib/zstd.h"  /* ZSTD_VERSION_STRING, ZSTD_minCLevel, ZSTD_maxCLevel */
+#include "fileio_asyncio.h"
 
 
 /*-************************************
 *  Constants
 **************************************/
-#define COMPRESSOR_NAME "zstd command line interface"
+#define COMPRESSOR_NAME "Zstandard CLI"
 #ifndef ZSTD_VERSION
 #  define ZSTD_VERSION "v" ZSTD_VERSION_STRING
 #endif
 #define AUTHOR "Yann Collet"
-#define WELCOME_MESSAGE "*** %s %i-bits %s, by %s ***\n", COMPRESSOR_NAME, (int)(sizeof(size_t)*8), ZSTD_VERSION, AUTHOR
+#define WELCOME_MESSAGE "*** %s (%i-bit) %s, by %s ***\n", COMPRESSOR_NAME, (int)(sizeof(size_t)*8), ZSTD_VERSION, AUTHOR
 
 #define ZSTD_ZSTDMT "zstdmt"
 #define ZSTD_UNZSTD "unzstd"
@@ -124,6 +125,15 @@ static void checkLibVersion(void)
 }
 
 
+/*! exeNameMatch() :
+    @return : a non-zero value if exeName matches test, excluding the extension
+   */
+static int exeNameMatch(const char* exeName, const char* test)
+{
+    return !strncmp(exeName, test, strlen(test)) &&
+        (exeName[strlen(test)] == '\0' || exeName[strlen(test)] == '.');
+}
+
 /*-************************************
 *  Command Line
 **************************************/
@@ -133,143 +143,174 @@ static void checkLibVersion(void)
  */
 static void usage(FILE* f, const char* programName)
 {
-    DISPLAY_F(f, "Usage : \n");
-    DISPLAY_F(f, "      %s [args] [FILE(s)] [-o file] \n", programName);
+    DISPLAY_F(f, "Compress or decompress the INPUT file(s); reads from STDIN if INPUT is `-` or not provided.\n\n");
+    DISPLAY_F(f, "Usage: %s [OPTIONS...] [INPUT... | -] [-o OUTPUT]\n\n", programName);
+    DISPLAY_F(f, "Options:\n");
+    DISPLAY_F(f, "  -o OUTPUT                     Write output to a single file, OUTPUT.\n");
+    DISPLAY_F(f, "  -k, --keep                    Preserve INPUT file(s). [Default] \n");
+    DISPLAY_F(f, "  --rm                          Remove INPUT file(s) after successful (de)compression.\n");
+#ifdef ZSTD_GZCOMPRESS
+    if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
+        DISPLAY_F(f, "  -n, --no-name                 Do not store original filename when compressing.\n\n");
+    }
+#endif
     DISPLAY_F(f, "\n");
-    DISPLAY_F(f, "FILE    : a filename \n");
-    DISPLAY_F(f, "          with no FILE, or when FILE is - , read standard input\n");
-    DISPLAY_F(f, "Arguments : \n");
 #ifndef ZSTD_NOCOMPRESS
-    DISPLAY_F(f, " -#     : # compression level (1-%d, default: %d) \n", ZSTDCLI_CLEVEL_MAX, ZSTDCLI_CLEVEL_DEFAULT);
+    DISPLAY_F(f, "  -#                            Desired compression level, where `#` is a number between 1 and %d;\n", ZSTDCLI_CLEVEL_MAX);
+    DISPLAY_F(f, "                                lower numbers provide faster compression, higher numbers yield\n");
+    DISPLAY_F(f, "                                better compression ratios. [Default: %d]\n\n", ZSTDCLI_CLEVEL_DEFAULT);
 #endif
 #ifndef ZSTD_NODECOMPRESS
-    DISPLAY_F(f, " -d     : decompression \n");
+    DISPLAY_F(f, "  -d, --decompress              Perform decompression.\n");
 #endif
-    DISPLAY_F(f, " -D DICT: use DICT as Dictionary for compression or decompression \n");
-    DISPLAY_F(f, " -o file: result stored into `file` (only 1 output file) \n");
-    DISPLAY_F(f, " -f     : disable input and output checks. Allows overwriting existing files,\n");
-    DISPLAY_F(f, "          input from console, output to stdout, operating on links,\n");
-    DISPLAY_F(f, "          block devices, etc.\n");
-    DISPLAY_F(f, "--rm    : remove source file(s) after successful de/compression \n");
-    DISPLAY_F(f, " -k     : preserve source file(s) (default) \n");
-    DISPLAY_F(f, " -h/-H  : display help/long help and exit \n");
+    DISPLAY_F(f, "  -D DICT                       Use DICT as the dictionary for compression or decompression.\n\n");
+    DISPLAY_F(f, "  -f, --force                   Disable input and output checks. Allows overwriting existing files,\n");
+    DISPLAY_F(f, "                                receiving input from the console, printing ouput to STDOUT, and\n");
+    DISPLAY_F(f, "                                operating on links, block devices, etc. Unrecognized formats will be\n");
+    DISPLAY_F(f, "                                passed-through through as-is.\n\n");
+
+    DISPLAY_F(f, "  -h                            Display short usage and exit.\n");
+    DISPLAY_F(f, "  -H, --help                    Display full help and exit.\n");
+    DISPLAY_F(f, "  -V, --version                 Display the program version and exit.\n");
+    DISPLAY_F(f, "\n");
 }
 
 static void usage_advanced(const char* programName)
 {
     DISPLAYOUT(WELCOME_MESSAGE);
+    DISPLAYOUT("\n");
     usage(stdout, programName);
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "Advanced arguments : \n");
-    DISPLAYOUT( " -V     : display Version number and exit \n");
+    DISPLAYOUT("Advanced options:\n");
+    DISPLAYOUT("  -c, --stdout                  Write to STDOUT (even if it is a console) and keep the INPUT file(s).\n\n");
 
-    DISPLAYOUT( " -c     : write to standard output (even if it is the console) \n");
-
-    DISPLAYOUT( " -v     : verbose mode; specify multiple times to increase verbosity \n");
-    DISPLAYOUT( " -q     : suppress warnings; specify twice to suppress errors too \n");
-    DISPLAYOUT( "--[no-]progress : forcibly display, or never display the progress counter.\n");
-    DISPLAYOUT( "                  note: any (de)compressed output to terminal will mix with progress counter text. \n");
+    DISPLAYOUT("  -v, --verbose                 Enable verbose output; pass multiple times to increase verbosity.\n");
+    DISPLAYOUT("  -q, --quiet                   Suppress warnings; pass twice to suppress errors.\n");
+#ifndef ZSTD_NOTRACE
+    DISPLAYOUT("  --trace LOG                   Log tracing information to LOG.\n");
+#endif
+    DISPLAYOUT("\n");
+    DISPLAYOUT("  --[no-]progress               Forcibly show/hide the progress counter. NOTE: Any (de)compressed\n");
+    DISPLAYOUT("                                output to terminal will mix with progress counter text.\n\n");
 
 #ifdef UTIL_HAS_CREATEFILELIST
-    DISPLAYOUT( " -r     : operate recursively on directories \n");
-    DISPLAYOUT( "--filelist FILE : read list of files to operate upon from FILE \n");
-    DISPLAYOUT( "--output-dir-flat DIR : processed files are stored into DIR \n");
+    DISPLAYOUT("  -r                            Operate recursively on directories.\n");
+    DISPLAYOUT("  --filelist LIST               Read a list of files to operate on from LIST.\n");
+    DISPLAYOUT("  --output-dir-flat DIR         Store processed files in DIR.\n");
 #endif
 
 #ifdef UTIL_HAS_MIRRORFILELIST
-    DISPLAYOUT( "--output-dir-mirror DIR : processed files are stored into DIR respecting original directory structure \n");
+    DISPLAYOUT("  --output-dir-mirror DIR       Store processed files in DIR, respecting original directory structure.\n");
 #endif
+    if (AIO_supported())
+        DISPLAYOUT("  --[no-]asyncio                Use asynchronous IO. [Default: Enabled]\n");
 
-
+    DISPLAYOUT("\n");
 #ifndef ZSTD_NOCOMPRESS
-    DISPLAYOUT( "--[no-]check : during compression, add XXH64 integrity checksum to frame (default: enabled)");
+    DISPLAYOUT("  --[no-]check                  Add XXH64 integrity checksums during compression. [Default: Add, Validate]\n");
 #ifndef ZSTD_NODECOMPRESS
-    DISPLAYOUT( ". If specified with -d, decompressor will ignore/validate checksums in compressed frame (default: validate).");
+    DISPLAYOUT("                                If `-d` is present, ignore/validate checksums during decompression.\n");
 #endif
 #else
 #ifdef ZSTD_NOCOMPRESS
-    DISPLAYOUT( "--[no-]check : during decompression, ignore/validate checksums in compressed frame (default: validate).");
+    DISPLAYOUT("  --[no-]check                  Ignore/validate checksums during decompression. [Default: Validate]");
 #endif
 #endif /* ZSTD_NOCOMPRESS */
 
-#ifndef ZSTD_NOTRACE
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "--trace FILE : log tracing information to FILE.");
-#endif
-    DISPLAYOUT( "\n");
-
-    DISPLAYOUT( "--      : All arguments after \"--\" are treated as files \n");
+    DISPLAYOUT("\n");
+    DISPLAYOUT("  --                            Treat remaining arguments after `--` as files.\n");
 
 #ifndef ZSTD_NOCOMPRESS
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "Advanced compression arguments : \n");
-    DISPLAYOUT( "--ultra : enable levels beyond %i, up to %i (requires more memory) \n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
-    DISPLAYOUT( "--long[=#]: enable long distance matching with given window log (default: %u) \n", g_defaultMaxWindowLog);
-    DISPLAYOUT( "--fast[=#]: switch to very fast compression levels (default: %u) \n", 1);
-    DISPLAYOUT( "--adapt : dynamically adapt compression level to I/O conditions \n");
-    DISPLAYOUT( "--[no-]row-match-finder : force enable/disable usage of fast row-based matchfinder for greedy, lazy, and lazy2 strategies \n");
-    DISPLAYOUT( "--patch-from=FILE : specify the file to be used as a reference point for zstd's diff engine. \n");
-# ifdef ZSTD_MULTITHREAD
-    DISPLAYOUT( " -T#    : spawns # compression threads (default: 1, 0==# cores) \n");
-    DISPLAYOUT( " -B#    : select size of each job (default: 0==automatic) \n");
-    DISPLAYOUT( "--single-thread : use a single thread for both I/O and compression (result slightly different than -T1) \n");
-    DISPLAYOUT( "--auto-threads={physical,logical} (default: physical} : use either physical cores or logical cores as default when specifying -T0 \n");
-    DISPLAYOUT( "--rsyncable : compress using a rsync-friendly method (-B sets block size) \n");
-# endif
-    DISPLAYOUT( "--exclude-compressed: only compress files that are not already compressed \n");
-    DISPLAYOUT( "--stream-size=# : specify size of streaming input from `stdin` \n");
-    DISPLAYOUT( "--size-hint=# optimize compression parameters for streaming input of approximately this size \n");
-    DISPLAYOUT( "--target-compressed-block-size=# : generate compressed block of approximately targeted size \n");
-    DISPLAYOUT( "--no-dictID : don't write dictID into header (dictionary compression only) \n");
-    DISPLAYOUT( "--[no-]compress-literals : force (un)compressed literals \n");
-
-    DISPLAYOUT( "--format=zstd : compress files to the .zst format (default) \n");
+    DISPLAYOUT("\n");
+    DISPLAYOUT("Advanced compression options:\n");
+    DISPLAYOUT("  --ultra                       Enable levels beyond %i, up to %i; requires more memory.\n", ZSTDCLI_CLEVEL_MAX, ZSTD_maxCLevel());
+    DISPLAYOUT("  --fast[=#]                    Use to very fast compression levels. [Default: %u]\n", 1);
 #ifdef ZSTD_GZCOMPRESS
-    DISPLAYOUT( "--format=gzip : compress files to the .gz format \n");
+    if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
+        DISPLAYOUT("  --best                        Compatibility alias for `-9`.\n");
+    }
+#endif
+    DISPLAYOUT("  --adapt                       Dynamically adapt compression level to I/O conditions.\n");
+    DISPLAYOUT("  --long[=#]                    Enable long distance matching with window log #. [Default: %u]\n", g_defaultMaxWindowLog);
+    DISPLAYOUT("  --patch-from=REF              Use REF as the reference point for Zstandard's diff engine. \n\n");
+# ifdef ZSTD_MULTITHREAD
+    DISPLAYOUT("  -T#                           Spawn # compression threads. [Default: 1; pass 0 for core count.]\n");
+    DISPLAYOUT("  --single-thread               Share a single thread for I/O and compression (slightly different than `-T1`).\n");
+    DISPLAYOUT("  --auto-threads={physical|logical}\n");
+    DISPLAYOUT("                                Use physical/logical cores when using `-T0`. [Default: Physical]\n\n");
+    DISPLAYOUT("  -B#                           Set job size to #. [Default: 0 (automatic)]\n");
+    DISPLAYOUT("  --rsyncable                   Compress using a rsync-friendly method (`-B` sets block size). \n");
+    DISPLAYOUT("\n");
+# endif
+    DISPLAYOUT("  --exclude-compressed          Only compress files that are not already compressed.\n\n");
+
+    DISPLAYOUT("  --stream-size=#               Specify size of streaming input from STDIN.\n");
+    DISPLAYOUT("  --size-hint=#                 Optimize compression parameters for streaming input of approximately size #.\n");
+    DISPLAYOUT("  --target-compressed-block-size=#\n");
+    DISPLAYOUT("                                Generate compressed blocks of approximately # size.\n\n");
+    DISPLAYOUT("  --no-dictID                   Don't write `dictID` into the header (dictionary compression only).\n");
+    DISPLAYOUT("  --[no-]compress-literals      Force (un)compressed literals.\n");
+    DISPLAYOUT("  --[no-]row-match-finder       Explicitly enable/disable the fast, row-based matchfinder for\n");
+    DISPLAYOUT("                                the 'greedy', 'lazy', and 'lazy2' strategies.\n");
+
+    DISPLAYOUT("\n");
+    DISPLAYOUT("  --format=zstd                 Compress files to the `.zst` format. [Default]\n");
+#ifdef ZSTD_GZCOMPRESS
+    DISPLAYOUT("  --format=gzip                 Compress files to the `.gz` format.\n");
 #endif
 #ifdef ZSTD_LZMACOMPRESS
-    DISPLAYOUT( "--format=xz : compress files to the .xz format \n");
-    DISPLAYOUT( "--format=lzma : compress files to the .lzma format \n");
+    DISPLAYOUT("  --format=xz                   Compress files to the `.xz` format.\n");
+    DISPLAYOUT("  --format=lzma                 Compress files to the `.lzma` format.\n");
 #endif
 #ifdef ZSTD_LZ4COMPRESS
-    DISPLAYOUT( "--format=lz4 : compress files to the .lz4 format \n");
+    DISPLAYOUT( "  --format=lz4                 Compress files to the `.lz4` format.\n");
 #endif
 #endif  /* !ZSTD_NOCOMPRESS */
 
 #ifndef ZSTD_NODECOMPRESS
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "Advanced decompression arguments : \n");
-    DISPLAYOUT( " -l     : print information about zstd compressed files \n");
-    DISPLAYOUT( "--test  : test compressed file integrity \n");
-    DISPLAYOUT( " -M#    : Set a memory usage limit for decompression \n");
+    DISPLAYOUT("\n");
+    DISPLAYOUT("Advanced decompression options:\n");
+    DISPLAYOUT("  -l                            Print information about Zstandard-compressed files.\n");
+    DISPLAYOUT("  --test                        Test compressed file integrity.\n");
+    DISPLAYOUT("  -M#                           Set the memory usage limit to # megabytes.\n");
 # if ZSTD_SPARSE_DEFAULT
-    DISPLAYOUT( "--[no-]sparse : sparse mode (default: enabled on file, disabled on stdout) \n");
+    DISPLAYOUT("  --[no-]sparse                 Enable sparse mode. [Default: Enabled for files, disabled for STDOUT.]\n");
 # else
-    DISPLAYOUT( "--[no-]sparse : sparse mode (default: disabled) \n");
+    DISPLAYOUT("  --[no-]sparse                 Enable sparse mode. [Default: Disabled]\n");
 # endif
+    {
+        char const* passThroughDefault = "Disabled";
+        if (exeNameMatch(programName, ZSTD_CAT) ||
+            exeNameMatch(programName, ZSTD_ZCAT) ||
+            exeNameMatch(programName, ZSTD_GZCAT)) {
+            passThroughDefault = "Enabled";
+        }
+        DISPLAYOUT("  --[no-]pass-through           Pass through uncompressed files as-is. [Default: %s]\n", passThroughDefault);
+    }
 #endif  /* ZSTD_NODECOMPRESS */
 
 #ifndef ZSTD_NODICT
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "Dictionary builder : \n");
-    DISPLAYOUT( "--train ## : create a dictionary from a training set of files \n");
-    DISPLAYOUT( "--train-cover[=k=#,d=#,steps=#,split=#,shrink[=#]] : use the cover algorithm with optional args \n");
-    DISPLAYOUT( "--train-fastcover[=k=#,d=#,f=#,steps=#,split=#,accel=#,shrink[=#]] : use the fast cover algorithm with optional args \n");
-    DISPLAYOUT( "--train-legacy[=s=#] : use the legacy algorithm with selectivity (default: %u) \n", g_defaultSelectivityLevel);
-    DISPLAYOUT( " -o DICT : DICT is dictionary name (default: %s) \n", g_defaultDictName);
-    DISPLAYOUT( "--maxdict=# : limit dictionary to specified size (default: %u) \n", g_defaultMaxDictSize);
-    DISPLAYOUT( "--dictID=# : force dictionary ID to specified value (default: random) \n");
+    DISPLAYOUT("\n");
+    DISPLAYOUT("Dictionary builder:\n");
+    DISPLAYOUT("  --train                       Create a dictionary from a training set of files.\n\n");
+    DISPLAYOUT("  --train-cover[=k=#,d=#,steps=#,split=#,shrink[=#]]\n");
+    DISPLAYOUT("                                Use the cover algorithm (with optional arguments).\n");
+    DISPLAYOUT("  --train-fastcover[=k=#,d=#,f=#,steps=#,split=#,accel=#,shrink[=#]]\n");
+    DISPLAYOUT("                                Use the fast cover algorithm (with optional arguments).\n\n");
+    DISPLAYOUT("  --train-legacy[=s=#]          Use the legacy algorithm with selectivity #. [Default: %u]\n", g_defaultSelectivityLevel);
+    DISPLAYOUT("  -o NAME                       Use NAME as dictionary name. [Default: %s]\n", g_defaultDictName);
+    DISPLAYOUT("  --maxdict=#                   Limit dictionary to specified size #. [Default: %u]\n", g_defaultMaxDictSize);
+    DISPLAYOUT("  --dictID=#                    Force dictionary ID to #. [Default: Random]\n");
 #endif
 
 #ifndef ZSTD_NOBENCH
-    DISPLAYOUT( "\n");
-    DISPLAYOUT( "Benchmark arguments : \n");
-    DISPLAYOUT( " -b#    : benchmark file(s), using # compression level (default: %d) \n", ZSTDCLI_CLEVEL_DEFAULT);
-    DISPLAYOUT( " -e#    : test all compression levels successively from -b# to -e# (default: 1) \n");
-    DISPLAYOUT( " -i#    : minimum evaluation time in seconds (default: 3s) \n");
-    DISPLAYOUT( " -B#    : cut file into independent blocks of size # (default: no block) \n");
-    DISPLAYOUT( " -S     : output one benchmark result per input file (default: consolidated result) \n");
-    DISPLAYOUT( "--priority=rt : set process priority to real-time \n");
+    DISPLAYOUT("\n");
+    DISPLAYOUT("Benchmark options:\n");
+    DISPLAYOUT("  -b#                           Perform benchmarking with compression level #. [Default: %d]\n", ZSTDCLI_CLEVEL_DEFAULT);
+    DISPLAYOUT("  -e#                           Test all compression levels up to #; starting level is `-b#`. [Default: 1]\n");
+    DISPLAYOUT("  -i#                           Set the minimum evaluation to time # seconds. [Default: 3]\n");
+    DISPLAYOUT("  -B#                           Cut file into independent chunks of size #. [Default: No chunking]\n");
+    DISPLAYOUT("  -S                            Output one benchmark result per input file. [Default: Consolidated result]\n");
+    DISPLAYOUT("  --priority=rt                 Set process priority to real-time.\n");
 #endif
 
 }
@@ -294,15 +335,6 @@ static const char* lastNameFromPath(const char* path)
     if (strrchr(name, '/')) name = strrchr(name, '/') + 1;
     if (strrchr(name, '\\')) name = strrchr(name, '\\') + 1; /* windows */
     return name;
-}
-
-/*! exeNameMatch() :
-    @return : a non-zero value if exeName matches test, excluding the extension
-   */
-static int exeNameMatch(const char* exeName, const char* test)
-{
-    return !strncmp(exeName, test, strlen(test)) &&
-        (exeName[strlen(test)] == '\0' || exeName[strlen(test)] == '.');
 }
 
 static void errorOut(const char* msg)
@@ -634,6 +666,11 @@ static void printVersion(void)
     #endif
         DISPLAYOUT("\n");
         if (g_displayLevel >= 4) {
+            /* library versions */
+            DISPLAYOUT("zlib version %s\n", FIO_zlibVersion());
+            DISPLAYOUT("lz4 version %s\n", FIO_lz4Version());
+            DISPLAYOUT("lzma version %s\n", FIO_lzmaVersion());
+
             /* posix support */
         #ifdef _POSIX_C_SOURCE
             DISPLAYOUT("_POSIX_C_SOURCE defined: %ldL\n", (long) _POSIX_C_SOURCE);
@@ -763,6 +800,18 @@ static unsigned init_nbThreads(void) {
     const char* __nb;             \
     NEXT_FIELD(__nb);             \
     val32 = readU32FromChar(&__nb); \
+    if(*__nb != 0) {         \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+    }                             \
+}
+
+#define NEXT_TSIZE(valTsize) {      \
+    const char* __nb;             \
+    NEXT_FIELD(__nb);             \
+    valTsize = readSizeTFromChar(&__nb); \
+    if(*__nb != 0) {         \
+        errorOut("error: only numeric values with optional suffixes K, KB, KiB, M, MB, MiB are allowed"); \
+    }                             \
 }
 
 typedef enum { zom_compress, zom_decompress, zom_test, zom_bench, zom_train, zom_list } zstd_operation_mode;
@@ -788,7 +837,6 @@ int main(int argCount, const char* argv[])
         hasStdout = 0,
         ldmFlag = 0,
         main_pause = 0,
-        nbWorkers = 0,
         adapt = 0,
         useRowMatchFinder = 0,
         adaptMin = MINCLEVEL,
@@ -799,12 +847,11 @@ int main(int argCount, const char* argv[])
         separateFiles = 0,
         setRealTimePrio = 0,
         singleThread = 0,
-#ifdef ZSTD_MULTITHREAD
         defaultLogicalCores = 0,
-#endif
         showDefaultCParams = 0,
         ultra=0,
         contentSize=1;
+    unsigned nbWorkers = 0;
     double compressibility = 0.5;
     unsigned bench_nbSeconds = 3;   /* would be better if this value was synchronized from bench */
     size_t blockSize = 0;
@@ -831,6 +878,7 @@ int main(int argCount, const char* argv[])
     size_t streamSrcSize = 0;
     size_t targetCBlockSize = 0;
     size_t srcSizeHint = 0;
+    size_t nbInputFileNames = 0;
     int dictCLevel = g_defaultDictCLevel;
     unsigned dictSelect = g_defaultSelectivityLevel;
 #ifndef ZSTD_NODICT
@@ -858,11 +906,14 @@ int main(int argCount, const char* argv[])
     /* preset behaviors */
     if (exeNameMatch(programName, ZSTD_ZSTDMT)) nbWorkers=0, singleThread=0;
     if (exeNameMatch(programName, ZSTD_UNZSTD)) operation=zom_decompress;
-    if (exeNameMatch(programName, ZSTD_CAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; outFileName=stdoutmark; g_displayLevel=1; }     /* supports multiple formats */
-    if (exeNameMatch(programName, ZSTD_ZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; outFileName=stdoutmark; g_displayLevel=1; }    /* behave like zcat, also supports multiple formats */
-    if (exeNameMatch(programName, ZSTD_GZ)) { suffix = GZ_EXTENSION; FIO_setCompressionType(prefs, FIO_gzipCompression); FIO_setRemoveSrcFile(prefs, 1); }        /* behave like gzip */
+    if (exeNameMatch(programName, ZSTD_CAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }     /* supports multiple formats */
+    if (exeNameMatch(programName, ZSTD_ZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }    /* behave like zcat, also supports multiple formats */
+    if (exeNameMatch(programName, ZSTD_GZ)) {   /* behave like gzip */
+        suffix = GZ_EXTENSION; FIO_setCompressionType(prefs, FIO_gzipCompression); FIO_setRemoveSrcFile(prefs, 1);
+        dictCLevel = cLevel = 6;  /* gzip default is -6 */
+    }
     if (exeNameMatch(programName, ZSTD_GUNZIP)) { operation=zom_decompress; FIO_setRemoveSrcFile(prefs, 1); }                                                     /* behave like gunzip, also supports multiple formats */
-    if (exeNameMatch(programName, ZSTD_GZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; outFileName=stdoutmark; g_displayLevel=1; }   /* behave like gzcat, also supports multiple formats */
+    if (exeNameMatch(programName, ZSTD_GZCAT)) { operation=zom_decompress; FIO_overwriteMode(prefs); forceStdout=1; followLinks=1; FIO_setPassThroughFlag(prefs, 1); outFileName=stdoutmark; g_displayLevel=1; }   /* behave like gzcat, also supports multiple formats */
     if (exeNameMatch(programName, ZSTD_LZMA)) { suffix = LZMA_EXTENSION; FIO_setCompressionType(prefs, FIO_lzmaCompression); FIO_setRemoveSrcFile(prefs, 1); }    /* behave like lzma */
     if (exeNameMatch(programName, ZSTD_UNLZMA)) { operation=zom_decompress; FIO_setCompressionType(prefs, FIO_lzmaCompression); FIO_setRemoveSrcFile(prefs, 1); } /* behave like unlzma, also supports multiple formats */
     if (exeNameMatch(programName, ZSTD_XZ)) { suffix = XZ_EXTENSION; FIO_setCompressionType(prefs, FIO_xzCompression); FIO_setRemoveSrcFile(prefs, 1); }          /* behave like xz */
@@ -905,13 +956,17 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--help")) { usage_advanced(programName); CLEAN_RETURN(0); }
                 if (!strcmp(argument, "--verbose")) { g_displayLevel++; continue; }
                 if (!strcmp(argument, "--quiet")) { g_displayLevel--; continue; }
-                if (!strcmp(argument, "--stdout")) { forceStdout=1; outFileName=stdoutmark; g_displayLevel-=(g_displayLevel==2); continue; }
+                if (!strcmp(argument, "--stdout")) { forceStdout=1; outFileName=stdoutmark; FIO_setRemoveSrcFile(prefs, 0); g_displayLevel-=(g_displayLevel==2); continue; }
                 if (!strcmp(argument, "--ultra")) { ultra=1; continue; }
                 if (!strcmp(argument, "--check")) { FIO_setChecksumFlag(prefs, 2); continue; }
                 if (!strcmp(argument, "--no-check")) { FIO_setChecksumFlag(prefs, 0); continue; }
                 if (!strcmp(argument, "--sparse")) { FIO_setSparseWrite(prefs, 2); continue; }
                 if (!strcmp(argument, "--no-sparse")) { FIO_setSparseWrite(prefs, 0); continue; }
+                if (!strcmp(argument, "--pass-through")) { FIO_setPassThroughFlag(prefs, 1); continue; }
+                if (!strcmp(argument, "--no-pass-through")) { FIO_setPassThroughFlag(prefs, 0); continue; }
                 if (!strcmp(argument, "--test")) { operation=zom_test; continue; }
+                if (!strcmp(argument, "--asyncio")) { FIO_setAsyncIOFlag(prefs, 1); continue;}
+                if (!strcmp(argument, "--no-asyncio")) { FIO_setAsyncIOFlag(prefs, 0); continue;}
                 if (!strcmp(argument, "--train")) { operation=zom_train; if (outFileName==NULL) outFileName=g_defaultDictName; continue; }
                 if (!strcmp(argument, "--no-dictID")) { FIO_setDictIDFlag(prefs, 0); continue; }
                 if (!strcmp(argument, "--keep")) { FIO_setRemoveSrcFile(prefs, 0); continue; }
@@ -928,6 +983,10 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--format=zstd")) { suffix = ZSTD_EXTENSION; FIO_setCompressionType(prefs, FIO_zstdCompression); continue; }
 #ifdef ZSTD_GZCOMPRESS
                 if (!strcmp(argument, "--format=gzip")) { suffix = GZ_EXTENSION; FIO_setCompressionType(prefs, FIO_gzipCompression); continue; }
+                if (exeNameMatch(programName, ZSTD_GZ)) {     /* behave like gzip */
+                    if (!strcmp(argument, "--best")) { dictCLevel = cLevel = 9; continue; }
+                    if (!strcmp(argument, "--no-name")) { /* ignore for now */; continue; }
+                }
 #endif
 #ifdef ZSTD_LZMACOMPRESS
                 if (!strcmp(argument, "--format=lzma")) { suffix = LZMA_EXTENSION; FIO_setCompressionType(prefs, FIO_lzmaCompression);  continue; }
@@ -942,6 +1001,10 @@ int main(int argCount, const char* argv[])
                 if (!strcmp(argument, "--no-progress")) { FIO_setProgressSetting(FIO_ps_never); continue; }
                 if (!strcmp(argument, "--progress")) { FIO_setProgressSetting(FIO_ps_always); continue; }
                 if (!strcmp(argument, "--exclude-compressed")) { FIO_setExcludeCompressedFile(prefs, 1); continue; }
+                if (!strcmp(argument, "--fake-stdin-is-console")) { UTIL_fakeStdinIsConsole(); continue; }
+                if (!strcmp(argument, "--fake-stdout-is-console")) { UTIL_fakeStdoutIsConsole(); continue; }
+                if (!strcmp(argument, "--fake-stderr-is-console")) { UTIL_fakeStderrIsConsole(); continue; }
+                if (!strcmp(argument, "--trace-file-stat")) { UTIL_traceFileStat(); continue; }
 
                 /* long commands with arguments */
 #ifndef ZSTD_NODICT
@@ -983,15 +1046,21 @@ int main(int argCount, const char* argv[])
                 if (longCommandWArg(&argument, "--memlimit")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memory")) { NEXT_UINT32(memLimit); continue; }
                 if (longCommandWArg(&argument, "--memlimit-decompress")) { NEXT_UINT32(memLimit); continue; }
-                if (longCommandWArg(&argument, "--block-size=")) { blockSize = readSizeTFromChar(&argument); continue; }
+                if (longCommandWArg(&argument, "--block-size")) { NEXT_TSIZE(blockSize); continue; }
                 if (longCommandWArg(&argument, "--maxdict")) { NEXT_UINT32(maxDictSize); continue; }
                 if (longCommandWArg(&argument, "--dictID")) { NEXT_UINT32(dictID); continue; }
                 if (longCommandWArg(&argument, "--zstd=")) { if (!parseCompressionParameters(argument, &compressionParams)) { badusage(programName); CLEAN_RETURN(1); } continue; }
-                if (longCommandWArg(&argument, "--stream-size=")) { streamSrcSize = readSizeTFromChar(&argument); continue; }
-                if (longCommandWArg(&argument, "--target-compressed-block-size=")) { targetCBlockSize = readSizeTFromChar(&argument); continue; }
-                if (longCommandWArg(&argument, "--size-hint=")) { srcSizeHint = readSizeTFromChar(&argument); continue; }
-                if (longCommandWArg(&argument, "--output-dir-flat")) { NEXT_FIELD(outDirName); continue; }
-#ifdef ZSTD_MULTITHREAD
+                if (longCommandWArg(&argument, "--stream-size")) { NEXT_TSIZE(streamSrcSize); continue; }
+                if (longCommandWArg(&argument, "--target-compressed-block-size")) { NEXT_TSIZE(targetCBlockSize); continue; }
+                if (longCommandWArg(&argument, "--size-hint")) { NEXT_TSIZE(srcSizeHint); continue; }
+                if (longCommandWArg(&argument, "--output-dir-flat")) {
+                    NEXT_FIELD(outDirName);
+                    if (strlen(outDirName) == 0) {
+                        DISPLAY("error: output dir cannot be empty string (did you mean to pass '.' instead?)\n");
+                        CLEAN_RETURN(1);
+                    }
+                    continue;
+                }
                 if (longCommandWArg(&argument, "--auto-threads")) {
                     const char* threadDefault = NULL;
                     NEXT_FIELD(threadDefault);
@@ -999,9 +1068,15 @@ int main(int argCount, const char* argv[])
                         defaultLogicalCores = 1;
                     continue;
                 }
-#endif
 #ifdef UTIL_HAS_MIRRORFILELIST
-                if (longCommandWArg(&argument, "--output-dir-mirror")) { NEXT_FIELD(outMirroredDirName); continue; }
+                if (longCommandWArg(&argument, "--output-dir-mirror")) {
+                    NEXT_FIELD(outMirroredDirName);
+                    if (strlen(outMirroredDirName) == 0) {
+                        DISPLAY("error: output dir cannot be empty string (did you mean to pass '.' instead?)\n");
+                        CLEAN_RETURN(1);
+                    }
+                    continue;
+                }
 #endif
 #ifndef ZSTD_NOTRACE
                 if (longCommandWArg(&argument, "--trace")) { char const* traceFile; NEXT_FIELD(traceFile); TRACE_enable(traceFile); continue; }
@@ -1018,6 +1093,8 @@ int main(int argCount, const char* argv[])
                         /* Invalid character following --long */
                         badusage(programName);
                         CLEAN_RETURN(1);
+                    } else {
+                        ldmWindowLog = g_defaultMaxWindowLog;
                     }
                     /* Only set windowLog if not already set by --zstd */
                     if (compressionParams.windowLog == 0)
@@ -1075,8 +1152,8 @@ int main(int argCount, const char* argv[])
                 {
                     /* Display help */
                 case 'V': printVersion(); CLEAN_RETURN(0);   /* Version Only */
-                case 'H':
-                case 'h': usage_advanced(programName); CLEAN_RETURN(0);
+                case 'H': usage_advanced(programName); CLEAN_RETURN(0);
+                case 'h': usage(stdout, programName); CLEAN_RETURN(0);
 
                      /* Compress */
                 case 'z': operation=zom_compress; argument++; break;
@@ -1090,7 +1167,10 @@ int main(int argCount, const char* argv[])
                         operation=zom_decompress; argument++; break;
 
                     /* Force stdout, even if stdout==console */
-                case 'c': forceStdout=1; outFileName=stdoutmark; argument++; break;
+                case 'c': forceStdout=1; outFileName=stdoutmark; FIO_setRemoveSrcFile(prefs, 0); argument++; break;
+
+                    /* do not store filename - gzip compatibility - nothing to do */
+                case 'n': argument++; break;
 
                     /* Use file content as dictionary */
                 case 'D': argument++; NEXT_FIELD(dictFileName); break;
@@ -1164,7 +1244,7 @@ int main(int argCount, const char* argv[])
                     /* nb of threads (hidden option) */
                 case 'T':
                     argument++;
-                    nbWorkers = (int)readU32FromChar(&argument);
+                    nbWorkers = readU32FromChar(&argument);
                     break;
 
                     /* Dictionary Selection level */
@@ -1204,18 +1284,21 @@ int main(int argCount, const char* argv[])
     DISPLAYLEVEL(3, WELCOME_MESSAGE);
 
 #ifdef ZSTD_MULTITHREAD
+    if ((operation==zom_decompress) && (!singleThread) && (nbWorkers > 1)) {
+        DISPLAYLEVEL(2, "Warning : decompression does not support multi-threading\n");
+    }
     if ((nbWorkers==0) && (!singleThread)) {
         /* automatically set # workers based on # of reported cpus */
         if (defaultLogicalCores) {
-            nbWorkers = UTIL_countLogicalCores();
+            nbWorkers = (unsigned)UTIL_countLogicalCores();
             DISPLAYLEVEL(3, "Note: %d logical core(s) detected \n", nbWorkers);
         } else {
-            nbWorkers = UTIL_countPhysicalCores();
+            nbWorkers = (unsigned)UTIL_countPhysicalCores();
             DISPLAYLEVEL(3, "Note: %d physical core(s) detected \n", nbWorkers);
         }
     }
 #else
-    (void)singleThread; (void)nbWorkers;
+    (void)singleThread; (void)nbWorkers; (void)defaultLogicalCores;
 #endif
 
     g_utilDisplayLevel = g_displayLevel;
@@ -1251,6 +1334,8 @@ int main(int argCount, const char* argv[])
         }
     }
 
+    nbInputFileNames = filenames->tableSize; /* saving number of input files */
+
     if (recursive) {  /* at this stage, filenameTable is a list of paths, which can contain both files and directories */
         UTIL_expandFNT(&filenames, followLinks);
     }
@@ -1272,7 +1357,7 @@ int main(int argCount, const char* argv[])
     if (operation==zom_bench) {
 #ifndef ZSTD_NOBENCH
         benchParams.blockSize = blockSize;
-        benchParams.nbWorkers = nbWorkers;
+        benchParams.nbWorkers = (int)nbWorkers;
         benchParams.realTime = (unsigned)setRealTimePrio;
         benchParams.nbSeconds = bench_nbSeconds;
         benchParams.ldmFlag = ldmFlag;
@@ -1353,20 +1438,30 @@ int main(int argCount, const char* argv[])
 #endif
 
     /* No input filename ==> use stdin and stdout */
-    if (filenames->tableSize == 0) UTIL_refFilename(filenames, stdinmark);
-    if (!strcmp(filenames->fileNames[0], stdinmark) && !outFileName)
+    if (filenames->tableSize == 0) {
+      /* It is possible that the input
+       was a number of empty directories. In this case
+       stdin and stdout should not be used */
+       if (nbInputFileNames > 0 ){
+        DISPLAYLEVEL(1, "please provide correct input file(s) or non-empty directories -- ignored \n");
+        CLEAN_RETURN(0);
+       }
+       UTIL_refFilename(filenames, stdinmark);
+    }
+
+    if (filenames->tableSize == 1 && !strcmp(filenames->fileNames[0], stdinmark) && !outFileName)
         outFileName = stdoutmark;  /* when input is stdin, default output is stdout */
 
     /* Check if input/output defined as console; trigger an error in this case */
     if (!forceStdin
-     && !strcmp(filenames->fileNames[0], stdinmark)
-     && IS_CONSOLE(stdin) ) {
+     && (UTIL_searchFileNamesTable(filenames, stdinmark) != -1)
+     && UTIL_isConsole(stdin) ) {
         DISPLAYLEVEL(1, "stdin is a console, aborting\n");
         CLEAN_RETURN(1);
     }
-    if ( outFileName && !strcmp(outFileName, stdoutmark)
-      && IS_CONSOLE(stdout)
-      && !strcmp(filenames->fileNames[0], stdinmark)
+    if ( (!outFileName || !strcmp(outFileName, stdoutmark))
+      && UTIL_isConsole(stdout)
+      && (UTIL_searchFileNamesTable(filenames, stdinmark) != -1)
       && !forceStdout
       && operation!=zom_decompress ) {
         DISPLAYLEVEL(1, "stdout is a console, aborting\n");
@@ -1384,7 +1479,7 @@ int main(int argCount, const char* argv[])
 
     if (showDefaultCParams) {
         if (operation == zom_decompress) {
-            DISPLAY("error : can't use --show-default-cparams in decomrpession mode \n");
+            DISPLAY("error : can't use --show-default-cparams in decompression mode \n");
             CLEAN_RETURN(1);
         }
     }
@@ -1402,7 +1497,7 @@ int main(int argCount, const char* argv[])
     /* No status message in pipe mode (stdin - stdout) */
     hasStdout = outFileName && !strcmp(outFileName,stdoutmark);
 
-    if ((hasStdout || !IS_CONSOLE(stderr)) && (g_displayLevel==2)) g_displayLevel=1;
+    if ((hasStdout || !UTIL_isConsole(stderr)) && (g_displayLevel==2)) g_displayLevel=1;
 
     /* IO Stream/File */
     FIO_setHasStdoutOutput(fCtx, hasStdout);
@@ -1423,7 +1518,7 @@ int main(int argCount, const char* argv[])
     if (operation==zom_compress) {
 #ifndef ZSTD_NOCOMPRESS
         FIO_setContentSize(prefs, contentSize);
-        FIO_setNbWorkers(prefs, nbWorkers);
+        FIO_setNbWorkers(prefs, (int)nbWorkers);
         FIO_setBlockSize(prefs, (int)blockSize);
         if (g_overlapLog!=OVERLAP_LOG_DEFAULT) FIO_setOverlapLog(prefs, (int)g_overlapLog);
         FIO_setLdmFlag(prefs, (unsigned)ldmFlag);
@@ -1431,7 +1526,7 @@ int main(int argCount, const char* argv[])
         FIO_setLdmMinMatch(prefs, (int)g_ldmMinMatch);
         if (g_ldmBucketSizeLog != LDM_PARAM_DEFAULT) FIO_setLdmBucketSizeLog(prefs, (int)g_ldmBucketSizeLog);
         if (g_ldmHashRateLog != LDM_PARAM_DEFAULT) FIO_setLdmHashRateLog(prefs, (int)g_ldmHashRateLog);
-        FIO_setAdaptiveMode(prefs, (unsigned)adapt);
+        FIO_setAdaptiveMode(prefs, adapt);
         FIO_setUseRowMatchFinder(prefs, useRowMatchFinder);
         FIO_setAdaptMin(prefs, adaptMin);
         FIO_setAdaptMax(prefs, adaptMax);
@@ -1440,6 +1535,7 @@ int main(int argCount, const char* argv[])
         FIO_setTargetCBlockSize(prefs, targetCBlockSize);
         FIO_setSrcSizeHint(prefs, srcSizeHint);
         FIO_setLiteralCompressionMode(prefs, literalCompressionMode);
+        FIO_setSparseWrite(prefs, 0);
         if (adaptMin > cLevel) cLevel = adaptMin;
         if (adaptMax < cLevel) cLevel = adaptMax;
 

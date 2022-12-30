@@ -1,5 +1,5 @@
 /*
- * Copyright (c) Yann Collet, Facebook, Inc.
+ * Copyright (c) Meta Platforms, Inc. and affiliates.
  * All rights reserved.
  *
  * This source code is licensed under both the BSD-style license (found in the
@@ -27,10 +27,11 @@
 #include <string.h>         /* memset */
 #include <stdio.h>          /* fprintf, fopen, ftello64 */
 #include <errno.h>          /* errno */
-#include <assert.h>
 
 #include "timefn.h"         /* UTIL_time_t, UTIL_clockSpanMicro, UTIL_getTime */
+#include "../lib/common/debug.h" /* assert */
 #include "../lib/common/mem.h"  /* read */
+#include "../lib/zstd_errors.h"
 #include "dibio.h"
 
 
@@ -127,8 +128,11 @@ static int DiB_loadFiles(
     while ( nbSamplesLoaded < sstSize && fileIndex < nbFiles ) {
         size_t fileDataLoaded;
         S64 const fileSize = DiB_getFileSize(fileNamesTable[fileIndex]);
-        if (fileSize <= 0) /* skip if zero-size or file error */
+        if (fileSize <= 0) {
+            /* skip if zero-size or file error */
+            ++fileIndex;
             continue;
+        }
 
         f = fopen( fileNamesTable[fileIndex], "rb");
         if (f == NULL)
@@ -193,7 +197,8 @@ static U32 DiB_rand(U32* src)
 static void DiB_shuffle(const char** fileNamesTable, unsigned nbFiles) {
     U32 seed = 0xFD2FB528;
     unsigned i;
-    assert(nbFiles >= 1);
+    if (nbFiles == 0)
+        return;
     for (i = nbFiles - 1; i > 0; --i) {
         unsigned const j = DiB_rand(&seed) % (i + 1);
         const char* const tmp = fileNamesTable[j];
@@ -350,7 +355,7 @@ int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
     }
 
     /* Checks */
-    if ((!sampleSizes) || (!srcBuffer) || (!dictBuffer))
+    if ((fs.nbSamples && !sampleSizes) || (!srcBuffer) || (!dictBuffer))
         EXM_THROW(12, "not enough memory for DiB_trainFiles");   /* should not happen */
     if (fs.oneSampleTooLarge) {
         DISPLAYLEVEL(2, "!  Warning : some sample(s) are very large \n");
@@ -379,7 +384,7 @@ int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
         srcBuffer, &loadedSize, sampleSizes, fs.nbSamples, fileNamesTable,
         nbFiles, chunkSize, displayLevel);
 
-    {   size_t dictSize;
+    {   size_t dictSize = ZSTD_error_GENERIC;
         if (params) {
             DiB_fillNoise((char*)srcBuffer + loadedSize, NOISELENGTH);   /* guard band, for end of buffer condition */
             dictSize = ZDICT_trainFromBuffer_legacy(dictBuffer, maxDictSize,
@@ -399,8 +404,7 @@ int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
               dictSize = ZDICT_trainFromBuffer_cover(dictBuffer, maxDictSize, srcBuffer,
                                                      sampleSizes, nbSamplesLoaded, *coverParams);
             }
-        } else {
-            assert(fastCoverParams != NULL);
+        } else if (fastCoverParams != NULL) {
             if (optimize) {
               dictSize = ZDICT_optimizeTrainFromBuffer_fastCover(dictBuffer, maxDictSize,
                                                               srcBuffer, sampleSizes, nbSamplesLoaded,
@@ -415,6 +419,8 @@ int DiB_trainFromFiles(const char* dictFileName, size_t maxDictSize,
               dictSize = ZDICT_trainFromBuffer_fastCover(dictBuffer, maxDictSize, srcBuffer,
                                                         sampleSizes, nbSamplesLoaded, *fastCoverParams);
             }
+        } else {
+            assert(0 /* Impossible */);
         }
         if (ZDICT_isError(dictSize)) {
             DISPLAYLEVEL(1, "dictionary training failed : %s \n", ZDICT_getErrorName(dictSize));   /* should not happen */
