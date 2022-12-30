@@ -24,3 +24,4 @@ builds/vc/ipch/
 /hdiffz
 /hpatchz
 build
+zconf.h.included
