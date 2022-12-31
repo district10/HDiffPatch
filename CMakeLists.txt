@@ -51,26 +51,13 @@ set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 set(CMAKE_MACOSX_RPATH 1)
 
-add_subdirectory(zlib)
-add_subdirectory(bzip2)
-add_subdirectory(lzma/C)
-add_subdirectory(libmd5)
-add_subdirectory(zstd/build/cmake)
-add_subdirectory(lz4/build/cmake)
-
-include_directories(BEFORE
-    ${CMAKE_CURRENT_LIST_DIR}
-    ${CMAKE_CURRENT_LIST_DIR}/lz4/lib
-    ${CMAKE_CURRENT_LIST_DIR}/lzma/C
-    ${CMAKE_CURRENT_LIST_DIR}/zstd/lib
-)
-
 add_definitions(
     -D_LARGEFILE_SOURCE
     -D_FILE_OFFSET_BITS=64
-    -D_IS_NEED_ALL_CompressPlugin=1
+    # -D_IS_NEED_ALL_CompressPlugin=1
     -D_IS_NEED_DEFAULT_CompressPlugin=1
-    -D_IS_NEED_ALL_ChecksumPlugin=1
+
+    # -D_IS_NEED_ALL_ChecksumPlugin=1
     -D_IS_NEED_DEFAULT_ChecksumPlugin=1
 
     -D_CompressPlugin_bz2
@@ -88,7 +75,7 @@ add_definitions(
     -D_CompressPlugin_lzma2
     -D_CompressPlugin_7zXZ
     -DUSE_CRC_EMU
-    -D_LZMA_DEC_OPT
+    # -D_LZMA_DEC_OPT
 
     -D_CompressPlugin_zstd
     -DZSTD_DISABLE_ASM
@@ -98,6 +85,21 @@ add_definitions(
     -DZSTD_MULTITHREAD=1
     -D_IS_USED_MULTITHREAD=1
     -D_IS_USED_PTHREAD=1
+)
+
+add_subdirectory(zlib)
+add_subdirectory(bzip2)
+add_subdirectory(lzma/C)
+add_subdirectory(libmd5)
+add_subdirectory(zstd/build/cmake)
+add_subdirectory(lz4/build/cmake)
+
+include_directories(BEFORE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/libmd5
+    ${CMAKE_CURRENT_LIST_DIR}/lz4/lib
+    ${CMAKE_CURRENT_LIST_DIR}/lzma/C
+    ${CMAKE_CURRENT_LIST_DIR}/zstd/lib
 )
 
 add_subdirectory(libHDiffPatch)
@@ -127,11 +129,11 @@ set(LIBS
     vcdiff_wrapper
 )
 
-# add_executable(hpatchz hpatchz.c)
-# target_link_libraries(hpatchz ${LIBS})
+add_executable(hpatchz hpatchz.c)
+target_link_libraries(hpatchz ${LIBS})
 
-# add_executable(hdiffz hdiffz.cpp)
-# target_link_libraries(hdiffz ${LIBS})
+add_executable(hdiffz hdiffz.cpp)
+target_link_libraries(hdiffz ${LIBS})
 
 option(BUILD_TESTS "Build tests." ON)
 if(BUILD_TESTS)
