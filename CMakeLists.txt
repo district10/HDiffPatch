@@ -100,6 +100,7 @@ add_definitions(
 
 add_subdirectory(libHDiffPatch)
 add_subdirectory(dirDiffPatch)
+add_subdirectory(libParallel)
 add_subdirectory(bsdiff_wrapper)
 add_subdirectory(vcdiff_wrapper)
 
