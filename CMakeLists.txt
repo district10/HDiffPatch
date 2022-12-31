@@ -52,6 +52,8 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 
 include_directories(BEFORE ${CMAKE_CURRENT_LIST_DIR})
 
+add_subdirectory(zlib)
+
 add_subdirectory(libHDiffPatch)
 add_subdirectory(dirDiffPatch)
 add_subdirectory(bsdiff_wrapper)

@@ -25,4 +25,5 @@ builds/vc/ipch/
 /hpatchz
 build
 !zstd/build
-zconf.h.included
+zlib/zconf.h.included
+zlib/zconf.h
