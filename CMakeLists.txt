@@ -50,6 +50,8 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/lib)
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${PROJECT_BINARY_DIR}/bin)
 
+include_directories(BEFORE ${CMAKE_CURRENT_LIST_DIR})
+
 add_subdirectory(libHDiffPatch)
 add_subdirectory(dirDiffPatch)
 add_subdirectory(bsdiff_wrapper)
@@ -75,8 +77,13 @@ set(LIBS
     vcdiff_wrapper
 )
 
-add_executable(hpatchz hpatchz.c)
-target_link_libraries(hpatchz ${LIBS})
+# add_executable(hpatchz hpatchz.c)
+# target_link_libraries(hpatchz ${LIBS})
 
-add_executable(hdiffz hdiffz.cpp)
-target_link_libraries(hdiffz ${LIBS})
+# add_executable(hdiffz hdiffz.cpp)
+# target_link_libraries(hdiffz ${LIBS})
+
+option(BUILD_TESTS "Build tests." ON)
+if(BUILD_TESTS)
+    add_subdirectory(test)
+endif()

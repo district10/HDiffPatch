@@ -1,0 +1,7 @@
+file(GLOB SRCS *.cpp)
+foreach(src ${SRCS})
+    string(REGEX REPLACE "(^.*/|.cpp$)" "" exe ${src})
+    add_executable(${exe} ${src})
+    target_link_libraries(${exe} ${LIBS})
+    install(TARGETS ${exe} RUNTIME DESTINATION bin)
+endforeach(src)
