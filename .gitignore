@@ -27,3 +27,4 @@ build
 !zstd/build
 zlib/zconf.h.included
 zlib/zconf.h
+!lz4/build

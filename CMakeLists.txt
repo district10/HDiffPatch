@@ -56,9 +56,11 @@ add_subdirectory(bzip2)
 add_subdirectory(lzma/C)
 add_subdirectory(libmd5)
 add_subdirectory(zstd/build/cmake)
+add_subdirectory(lz4/build/cmake)
 
 include_directories(BEFORE
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/lz4/lib
     ${CMAKE_CURRENT_LIST_DIR}/lzma/C
     ${CMAKE_CURRENT_LIST_DIR}/zstd/lib
 )
